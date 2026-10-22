@@ -96,3 +96,39 @@ export interface VolunteerImpactSummary {
   history: VolunteerHistoryItem[];
 }
 
+export interface OptimizedStop {
+  stop_sequence: number;
+  stop_type: 'pickup' | 'delivery';
+  pickup_id: string;
+  organization_name: string;
+  address: string;
+  latitude: number;
+  longitude: number;
+  arrival_time_minutes: number;
+  departure_time_minutes: number;
+  cumulative_load_kg: number;
+  quantity_kg: number;
+  portions: number;
+  storage_condition: string;
+  food_safety_instructions: string;
+}
+
+export interface OptimizedRoutePlan {
+  vehicle_id: string;
+  courier_name: string;
+  total_distance_km: number;
+  total_duration_minutes: number;
+  stops: OptimizedStop[];
+  is_feasible: boolean;
+}
+
+export interface AutoDispatchResult {
+  assigned_routes_count: number;
+  assigned_orders_count: number;
+  unassigned_orders_count: number;
+  total_distance_km: number;
+  total_duration_minutes: number;
+  routes: OptimizedRoutePlan[];
+  message: string;
+}
+

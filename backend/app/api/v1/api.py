@@ -11,6 +11,7 @@ from app.api.v1.endpoints import (
     matching,
     notifications,
     organizations,
+    routing,
     volunteer,
 )
 
@@ -45,4 +46,9 @@ api_router.include_router(
 # Volunteer Dispatch & Handover Verification
 api_router.include_router(
     volunteer.router, prefix="/volunteer", tags=["Volunteer Dispatch & Handover"]
+)
+
+# Google OR-Tools VRP Route Optimization & Auto-Dispatch
+api_router.include_router(
+    routing.router, prefix="/routing", tags=["Google OR-Tools VRP Routing"]
 )

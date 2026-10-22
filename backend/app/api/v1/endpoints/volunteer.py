@@ -191,13 +191,16 @@ async def claim_job(
     )
     duration_mins = max(15, int(dist_km * 2.5 + 15))
 
-    # 4. Check for an existing active route for this volunteer, or create a new Route
-    route_stmt = select(Route).where(
-        Route.volunteer_id == current_user.id,
-        Route.status.in_(["draft", "assigned", "in_progress"]),
+    route_stmt = (
+        select(Route)
+        .where(
+            Route.volunteer_id == current_user.id,
+            Route.status.in_(["draft", "assigned", "in_progress"]),
+        )
+        .order_by(Route.created_at.desc())
     )
     route_res = await db.execute(route_stmt)
-    route = route_res.scalar_one_or_none()
+    route = route_res.scalars().first()
 
     if not route:
         route = Route(
@@ -307,7 +310,7 @@ async def get_active_route(
         .order_by(Route.created_at.desc())
     )
     res = await db.execute(stmt)
-    route = res.scalar_one_or_none()
+    route = res.scalars().first()
 
     if not route:
         return ResponseEnvelope[Optional[ActiveRouteResponse]](
