@@ -4,7 +4,7 @@ Combines sub-routers for health, authentication, organizations, donations, match
 """
 
 from fastapi import APIRouter
-from app.api.v1.endpoints import auth, donations, health, organizations
+from app.api.v1.endpoints import auth, donations, health, matching, organizations
 
 api_router = APIRouter()
 
@@ -22,4 +22,9 @@ api_router.include_router(
 # Food Donations and Lifecycle Management
 api_router.include_router(
     donations.router, prefix="/donations", tags=["Food Donations & Lifecycle"]
+)
+
+# AI Matching Engine and Atomic Claims
+api_router.include_router(
+    matching.router, prefix="/matching", tags=["AI Matching & Atomic Claims"]
 )
