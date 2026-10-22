@@ -1,0 +1,30 @@
+{
+  "expo": {
+    "name": "LastPlate Volunteer",
+    "slug": "lastplate-volunteer",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#1B3B2B"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "org.lastplate.volunteer"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#1B3B2B"
+      },
+      "package": "org.lastplate.volunteer"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "apiBaseUrl": "http://127.0.0.1:8000/api/v1"
+    }
+  }
+}

@@ -4,7 +4,15 @@ Combines sub-routers for health, authentication, organizations, donations, match
 """
 
 from fastapi import APIRouter
-from app.api.v1.endpoints import auth, donations, health, matching, notifications, organizations
+from app.api.v1.endpoints import (
+    auth,
+    donations,
+    health,
+    matching,
+    notifications,
+    organizations,
+    volunteer,
+)
 
 api_router = APIRouter()
 
@@ -32,4 +40,9 @@ api_router.include_router(
 # In-App Notifications & Alerts
 api_router.include_router(
     notifications.router, prefix="/notifications", tags=["In-App Notifications & Alerts"]
+)
+
+# Volunteer Dispatch & Handover Verification
+api_router.include_router(
+    volunteer.router, prefix="/volunteer", tags=["Volunteer Dispatch & Handover"]
 )
