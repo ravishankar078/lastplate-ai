@@ -60,9 +60,9 @@ async def test_donation_model_constraints():
     """Verify surplus food donation properties and safety storage conditions."""
     async with AsyncSessionLocal() as session:
         result = await session.execute(
-            select(Donation).where(Donation.food_type == "cooked_meals")
+            select(Donation).where(Donation.food_type == "cooked_meals").limit(1)
         )
-        donation = result.scalar_one_or_none()
+        donation = result.scalars().first()
         assert donation is not None
         assert donation.quantity_kg > 0
         assert donation.storage_condition == "hot_holding"
