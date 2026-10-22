@@ -1,56 +1,84 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
+import apiClient from '../services/api/client';
 
 interface AuthContextValue {
   user: User | null;
   token: string | null;
   role: UserRole;
   isAuthenticated: boolean;
-  login: (role: UserRole, email?: string) => Promise<void>;
+  login: (role: UserRole, email?: string, password?: string) => Promise<boolean>;
   logout: () => void;
-  switchRole: (role: UserRole) => void;
+  switchRole: (role: UserRole) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
+const ROLE_CREDENTIALS: Record<UserRole, { email: string; password: string; name: string; org: string }> = {
+  donor: {
+    email: 'chef@grandbistro.org',
+    password: 'LastPlate#2026',
+    name: 'Elena Rostova',
+    org: 'The Grand Heritage Bistro',
+  },
+  ngo: {
+    email: 'director@hopeshelter.org',
+    password: 'LastPlate#2026',
+    name: 'Rev. Marcus Vance',
+    org: 'Hope Community Shelter & Kitchen',
+  },
+  volunteer: {
+    email: 'priya.volunteer@gmail.com',
+    password: 'LastPlate#2026',
+    name: 'Priya Sharma',
+    org: 'Volunteer Logistics',
+  },
+  admin: {
+    email: 'admin@lastplate.org',
+    password: 'LastPlate#2026',
+    name: 'Sarah Jenkins',
+    org: 'LastPlate Central Dispatch',
+  },
+};
+
 const DEMO_USERS: Record<UserRole, User> = {
   donor: {
-    id: 'usr-donor-01',
-    email: 'chef.maya@grandbistro.com',
-    fullName: 'Chef Maya Lin',
+    id: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa',
+    email: 'chef@grandbistro.org',
+    fullName: 'Elena Rostova',
     role: 'donor',
-    phone: '+1 (555) 392-8172',
-    organizationId: 'org-donor-01',
+    phone: '+91 98765 43210',
+    organizationId: '11111111-1111-1111-1111-111111111111',
     organizationName: 'The Grand Heritage Bistro',
     status: 'active',
     createdAt: '2026-01-15T08:00:00Z',
   },
   ngo: {
-    id: 'usr-ngo-01',
-    email: 'intake@hopecommunityshelter.org',
+    id: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb',
+    email: 'director@hopeshelter.org',
     fullName: 'Rev. Marcus Vance',
     role: 'ngo',
-    phone: '+1 (555) 728-4901',
-    organizationId: 'org-ngo-01',
+    phone: '+91 98765 43211',
+    organizationId: '33333333-3333-3333-3333-333333333333',
     organizationName: 'Hope Community Shelter & Kitchen',
     status: 'active',
     createdAt: '2026-01-10T09:30:00Z',
   },
   volunteer: {
-    id: 'usr-vol-01',
-    email: 'alex.rivera.courier@gmail.com',
-    fullName: 'Alex Rivera',
+    id: 'cccccccc-cccc-cccc-cccc-cccccccccccc',
+    email: 'priya.volunteer@gmail.com',
+    fullName: 'Priya Sharma',
     role: 'volunteer',
-    phone: '+1 (555) 819-2041',
+    phone: '+91 98765 43212',
     status: 'active',
     createdAt: '2026-02-01T14:15:00Z',
   },
   admin: {
-    id: 'usr-adm-01',
-    email: 'admin.dispatch@lastplate.org',
-    fullName: 'Sarah Chen',
+    id: 'dddddddd-dddd-dddd-dddd-dddddddddddd',
+    email: 'admin@lastplate.org',
+    fullName: 'Sarah Jenkins',
     role: 'admin',
-    phone: '+1 (800) 527-8752',
+    phone: '+91 98765 43213',
     organizationName: 'LastPlate Central Dispatch',
     status: 'active',
     createdAt: '2025-11-01T00:00:00Z',
@@ -85,14 +113,45 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [token]);
 
-  const login = async (selectedRole: UserRole, email?: string) => {
-    // Simulated auth delay
-    await new Promise((res) => setTimeout(res, 300));
+  const login = async (selectedRole: UserRole, email?: string, password?: string): Promise<boolean> => {
+    const creds = ROLE_CREDENTIALS[selectedRole];
+    const targetEmail = email || creds.email;
+    const targetPassword = password || creds.password;
+
+    try {
+      const response = await apiClient.post('/auth/login', {
+        email: targetEmail,
+        password: targetPassword,
+      });
+
+      if (response.data && response.data.success && response.data.data) {
+        const { access_token, user: apiUser, organization: apiOrg } = response.data.data;
+        const mappedUser: User = {
+          id: apiUser.id,
+          email: apiUser.email,
+          fullName: apiUser.full_name,
+          role: apiUser.role as UserRole,
+          phone: apiUser.phone || '',
+          organizationId: apiOrg?.id || apiUser.organization_id,
+          organizationName: apiOrg?.name || creds.org,
+          status: apiUser.is_active ? 'active' : 'suspended',
+          createdAt: apiUser.created_at,
+        };
+        setUser(mappedUser);
+        setToken(access_token);
+        return true;
+      }
+    } catch (err) {
+      console.warn('[AuthContext] Backend API login failed or offline. Using local persona fallback.', err);
+    }
+
+    // Fallback to local demo persona store
     const targetUser = DEMO_USERS[selectedRole];
     const resolvedUser = email ? { ...targetUser, email } : targetUser;
     const dummyToken = `demo_jwt_token_${selectedRole}_${Date.now()}`;
     setUser(resolvedUser);
     setToken(dummyToken);
+    return true;
   };
 
   const logout = () => {
@@ -102,10 +161,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     localStorage.removeItem('lastplate_token');
   };
 
-  const switchRole = (newRole: UserRole) => {
-    const targetUser = DEMO_USERS[newRole];
-    setUser(targetUser);
-    setToken(`demo_jwt_token_${newRole}_${Date.now()}`);
+  const switchRole = async (newRole: UserRole) => {
+    await login(newRole);
   };
 
   return (

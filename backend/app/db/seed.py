@@ -109,11 +109,13 @@ async def seed_database() -> None:
         await session.flush()
 
         # 2. Users (Passwords: dev password 'LastPlate#2026')
-        # We will use bcrypt in Phase 5; for Phase 4 seed we store the hashed dev string
+        from app.core.security import hash_password
+        default_pw = hash_password("LastPlate#2026")
+
         donor_user = User(
             id=uuid.UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
             email="chef@grandbistro.org",
-            hashed_password="$2b$12$e6m5Gf0rJp3zE/7p8E5Rwe3X9q3k2y9wJ8U9A3B5C7D9E1F3G5H7I",
+            hashed_password=default_pw,
             full_name="Elena Rostova",
             phone="+91 98765 43210",
             role="donor",
@@ -125,7 +127,7 @@ async def seed_database() -> None:
         ngo_user = User(
             id=uuid.UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
             email="director@hopeshelter.org",
-            hashed_password="$2b$12$e6m5Gf0rJp3zE/7p8E5Rwe3X9q3k2y9wJ8U9A3B5C7D9E1F3G5H7I",
+            hashed_password=default_pw,
             full_name="Rev. Marcus Vance",
             phone="+91 98765 43211",
             role="ngo",
@@ -137,7 +139,7 @@ async def seed_database() -> None:
         volunteer_user = User(
             id=uuid.UUID("cccccccc-cccc-cccc-cccc-cccccccccccc"),
             email="priya.volunteer@gmail.com",
-            hashed_password="$2b$12$e6m5Gf0rJp3zE/7p8E5Rwe3X9q3k2y9wJ8U9A3B5C7D9E1F3G5H7I",
+            hashed_password=default_pw,
             full_name="Priya Sharma",
             phone="+91 98765 43212",
             role="volunteer",
@@ -149,7 +151,7 @@ async def seed_database() -> None:
         admin_user = User(
             id=uuid.UUID("dddddddd-dddd-dddd-dddd-dddddddddddd"),
             email="admin@lastplate.org",
-            hashed_password="$2b$12$e6m5Gf0rJp3zE/7p8E5Rwe3X9q3k2y9wJ8U9A3B5C7D9E1F3G5H7I",
+            hashed_password=default_pw,
             full_name="Sarah Jenkins",
             phone="+91 98765 43213",
             role="admin",
