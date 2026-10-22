@@ -60,10 +60,11 @@ class Settings(BaseSettings):
     # Database Configuration (For Phase 4)
     POSTGRES_SERVER: str = "localhost"
     POSTGRES_PORT: int = 5432
-    POSTGRES_USER: str = "postgres"
+    POSTGRES_USER: str = "ravishankars"
     POSTGRES_PASSWORD: str = ""
     POSTGRES_DB: str = "lastplate"
-    DATABASE_URL: str = "postgresql+asyncpg://postgres:@localhost:5432/lastplate"
+    DATABASE_URL: str = "postgresql+asyncpg://ravishankars@localhost:5432/lastplate"
+    SYNC_DATABASE_URL: str = "postgresql+psycopg2://ravishankars@localhost:5432/lastplate"
 
     model_config = SettingsConfigDict(
         env_file=".env",

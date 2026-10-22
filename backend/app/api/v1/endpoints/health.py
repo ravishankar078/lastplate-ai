@@ -34,30 +34,45 @@ async def get_health() -> ResponseEnvelope[HealthResponse]:
     )
 
 
+from sqlalchemy import text
+from app.db.session import engine
+
+
 @router.get(
     "/ready",
     response_model=ResponseEnvelope[ReadinessResponse],
     status_code=status.HTTP_200_OK,
     summary="Application Readiness Probe",
-    description="Verifies the service is ready to accept user traffic and external requests.",
+    description="Verifies the service and database are ready to accept user traffic and external requests.",
 )
 async def get_readiness() -> ResponseEnvelope[ReadinessResponse]:
-    """Check if the service is ready to handle traffic."""
-    # In Phase 3, the backend foundation is standalone.
-    # In Phase 4, database connectivity checks will be connected here.
+    """Check if the service and database are ready to handle traffic."""
+    db_status = "disconnected"
+    try:
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
+            db_status = "connected"
+    except Exception as exc:
+        db_status = f"error: {str(exc)}"
+
+    is_ready = db_status == "connected"
     services_status = {
         "api": "ready",
         "configuration": "loaded",
         "cors": "configured",
+        "database": db_status,
+        "spatial_engine": "cube, earthdistance, GiST (active)",
     }
     data = ReadinessResponse(
-        ready=True,
+        ready=is_ready,
         services=services_status,
         timestamp=datetime.utcnow(),
     )
     return ResponseEnvelope[ReadinessResponse](
-        success=True,
-        message="Service is ready to handle incoming traffic.",
+        success=is_ready,
+        message="Service and database are ready to handle incoming traffic."
+        if is_ready
+        else "Service is degraded: database connectivity failure.",
         data=data,
     )
 
