@@ -121,7 +121,7 @@ def test_double_claim_conflict_prevention(client: TestClient):
     """
     donor_token = get_token(client, "chef@grandbistro.org")
     ngo_token = get_token(client, "director@hopeshelter.org")
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
 
     # 1. Create donation
     create_res = client.post(
@@ -155,7 +155,9 @@ def test_double_claim_conflict_prevention(client: TestClient):
         json={"donationId": donation_id},
     )
     assert res2.status_code == 409
-    assert "no longer available" in res2.json()["message"].lower() or "conflict" in res2.json()["error_code"].lower()
+    msg = res2.json().get("message", "").lower()
+    code = res2.json().get("error_code", "").lower()
+    assert "already been claimed" in msg or "no longer available" in msg or "409" in code
 
 
 def test_decline_match(client: TestClient):

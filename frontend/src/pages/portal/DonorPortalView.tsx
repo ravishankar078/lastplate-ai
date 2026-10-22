@@ -5,7 +5,13 @@ import {
   QrCode, 
   Heart, 
   TrendingUp, 
-  FileCheck2
+  FileCheck2,
+  Sparkles,
+  RefreshCw,
+  Split,
+  MapPin,
+  Users,
+  ShieldCheck
 } from 'lucide-react';
 import { Button } from '../../components/common/Button';
 import { Badge } from '../../components/common/Badge';
@@ -17,7 +23,16 @@ import { LoadingSpinner } from '../../components/ui/LoadingSpinner';
 import { useAuth } from '../../context/AuthContext';
 import { useNotification } from '../../context/NotificationContext';
 import { donationService } from '../../services/api/donationService';
-import { Donation, FoodType, StorageCondition, Allergen, CreateDonationDTO } from '../../types';
+import { matchingService } from '../../services/api/matchingService';
+import { 
+  Donation, 
+  FoodType, 
+  StorageCondition, 
+  Allergen, 
+  CreateDonationDTO,
+  DonationRecipientsResponse,
+  SplitDonationPlan
+} from '../../types';
 
 export const DonorPortalView: React.FC = () => {
   const { user } = useAuth();
@@ -26,6 +41,14 @@ export const DonorPortalView: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [activeQrDonation, setActiveQrDonation] = useState<Donation | null>(null);
+
+  // Phase 8: AI Match Inspection & Split Plan state
+  const [activeMatchesDonation, setActiveMatchesDonation] = useState<Donation | null>(null);
+  const [recipientsLoading, setRecipientsLoading] = useState(false);
+  const [donationRecipients, setDonationRecipients] = useState<DonationRecipientsResponse | null>(null);
+  const [splitPlan, setSplitPlan] = useState<SplitDonationPlan | null>(null);
+  const [rematching, setRematching] = useState(false);
+  const [activeMatchesTab, setActiveMatchesTab] = useState<'recipients' | 'split'>('recipients');
 
   // New Donation Form state
   const [title, setTitle] = useState('');
@@ -92,6 +115,38 @@ export const DonorPortalView: React.FC = () => {
     }
   };
 
+  const handleInspectMatches = async (d: Donation) => {
+    setActiveMatchesDonation(d);
+    setActiveMatchesTab('recipients');
+    setRecipientsLoading(true);
+    const [recRes, splitRes] = await Promise.all([
+      matchingService.getDonationRecipients(d.id),
+      matchingService.getSplitPlan(d.id),
+    ]);
+    setDonationRecipients(recRes);
+    setSplitPlan(splitRes);
+    setRecipientsLoading(false);
+  };
+
+  const handleTriggerRematching = async () => {
+    if (!activeMatchesDonation) return;
+    setRematching(true);
+    const success = await matchingService.triggerRematching(activeMatchesDonation.id);
+    if (success) {
+      showToast('AI Matching Re-calculated', 'Candidate matches and recipient notifications refreshed.', 'success');
+      const [recRes, splitRes] = await Promise.all([
+        matchingService.getDonationRecipients(activeMatchesDonation.id),
+        matchingService.getSplitPlan(activeMatchesDonation.id),
+      ]);
+      setDonationRecipients(recRes);
+      setSplitPlan(splitRes);
+      loadDonations();
+    } else {
+      showToast('Matching Busy', 'Could not re-calculate matches right now.', 'warning');
+    }
+    setRematching(false);
+  };
+
   // Stat metrics
   const activeDonationsCount = donations.filter((d) => ['available', 'matched', 'assigned', 'in_transit'].includes(d.status)).length;
   const deliveredMealsTotal = donations
@@ -144,6 +199,7 @@ export const DonorPortalView: React.FC = () => {
       render: (d) => {
         const variantMap: Record<string, 'emerald' | 'amber' | 'forest' | 'rose' | 'stone'> = {
           available: 'forest',
+          matched: 'emerald',
           assigned: 'emerald',
           in_transit: 'amber',
           delivered: 'stone',
@@ -162,7 +218,19 @@ export const DonorPortalView: React.FC = () => {
       align: 'right',
       render: (d) => (
         <div className="flex items-center justify-end gap-2">
-          {d.status === 'available' || d.status === 'assigned' ? (
+          {['available', 'matched', 'assigned'].includes(d.status) && (
+            <button
+              id={`btn-ai-matches-${d.id}`}
+              data-testid="btn-ai-matches"
+              onClick={() => handleInspectMatches(d)}
+              className="px-2.5 py-1 rounded-lg bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-xs font-semibold border border-emerald-200 flex items-center gap-1 shadow-xs transition"
+              title="Inspect AI Recipient Matches & Split Plan"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+              <span>AI Matches</span>
+            </button>
+          )}
+          {['available', 'assigned'].includes(d.status) ? (
             <>
               <button
                 onClick={() => setActiveQrDonation(d)}
@@ -170,7 +238,7 @@ export const DonorPortalView: React.FC = () => {
                 title="View Handover QR"
               >
                 <QrCode className="w-3.5 h-3.5" />
-                <span>QR Code</span>
+                <span>QR</span>
               </button>
               <button
                 onClick={() => handleCancelDonation(d.id)}
@@ -182,7 +250,7 @@ export const DonorPortalView: React.FC = () => {
             </>
           ) : (
             <span className="text-[11px] text-stone-400">
-              {d.status === 'delivered' ? 'Receipt Generated' : 'In Transit'}
+              {d.status === 'delivered' ? 'Receipt Generated' : d.status === 'matched' ? 'Waiting Claim' : 'In Transit'}
             </span>
           )}
         </div>
@@ -462,6 +530,229 @@ export const DonorPortalView: React.FC = () => {
                 This token expires in 2 hours and can only be scanned once. The pickup timestamp is immutably logged for Good Samaritan liability protection.
               </p>
             </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* AI MATCH DISCOVERY & SPLIT PLAN MODAL */}
+      <Modal
+        isOpen={!!activeMatchesDonation}
+        onClose={() => setActiveMatchesDonation(null)}
+        title="AI Match Discovery & Redistribution Plan"
+        subtitle={
+          activeMatchesDonation
+            ? `Two-stage heuristic matching for "${activeMatchesDonation.title}" (${activeMatchesDonation.estimatedMeals} meals)`
+            : ''
+        }
+        maxWidth="2xl"
+      >
+        {activeMatchesDonation && (
+          <div className="space-y-5">
+            {/* Top Toolbar */}
+            <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 bg-stone-50 rounded-2xl border border-stone-200">
+              <div className="flex items-center gap-2">
+                <Badge variant="forest" size="sm">
+                  {activeMatchesDonation.quantityKg} kg
+                </Badge>
+                <Badge variant="emerald" size="sm">
+                  ~{activeMatchesDonation.estimatedMeals} portions
+                </Badge>
+                <span className="text-xs text-stone-500 font-medium capitalize">
+                  {activeMatchesDonation.storageCondition.replace('_', ' ')}
+                </span>
+              </div>
+              <button
+                onClick={handleTriggerRematching}
+                disabled={rematching}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-stone-100 text-stone-700 text-xs font-semibold border border-stone-200 shadow-2xs transition disabled:opacity-50"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${rematching ? 'animate-spin text-emerald-600' : 'text-stone-500'}`} />
+                <span>{rematching ? 'Re-calculating...' : 'Re-run AI Matching'}</span>
+              </button>
+            </div>
+
+            {/* Navigation Tabs */}
+            <div className="flex border-b border-stone-200">
+              <button
+                id="tab-ranked-recipients"
+                onClick={() => setActiveMatchesTab('recipients')}
+                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition ${
+                  activeMatchesTab === 'recipients'
+                    ? 'border-emerald-600 text-emerald-800'
+                    : 'border-transparent text-stone-500 hover:text-stone-700'
+                }`}
+              >
+                <Users className="w-4 h-4" />
+                <span>Ranked Recipient Kitchens ({donationRecipients?.recipients.length || 0})</span>
+              </button>
+              <button
+                id="tab-split-plan"
+                onClick={() => setActiveMatchesTab('split')}
+                className={`flex items-center gap-2 px-4 py-2.5 text-xs font-bold border-b-2 transition ${
+                  activeMatchesTab === 'split'
+                    ? 'border-emerald-600 text-emerald-800'
+                    : 'border-transparent text-stone-500 hover:text-stone-700'
+                }`}
+              >
+                <Split className="w-4 h-4" />
+                <span>Split Redistribution Plan</span>
+                {splitPlan?.is_split_recommended && (
+                  <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-800 text-[10px] font-bold">
+                    Multi-Hub
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {recipientsLoading ? (
+              <div className="py-12 flex flex-col items-center justify-center gap-3">
+                <LoadingSpinner size="lg" />
+                <p className="text-xs text-stone-500 font-medium">Running geospatial heuristics and capacity checks...</p>
+              </div>
+            ) : activeMatchesTab === 'recipients' ? (
+              /* TAB 1: RANKED RECIPIENTS */
+              <div className="space-y-3.5 max-h-[420px] overflow-y-auto pr-1">
+                {donationRecipients?.recipients && donationRecipients.recipients.length > 0 ? (
+                  donationRecipients.recipients.map((rec, idx) => (
+                    <div
+                      key={rec.recipient_id}
+                      className="p-4 rounded-2xl bg-white border border-stone-200 hover:border-emerald-300 transition shadow-xs space-y-3"
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="w-5 h-5 rounded-full bg-forest-900 text-white text-[10px] font-bold flex items-center justify-center">
+                              #{idx + 1}
+                            </span>
+                            <h4 className="font-bold text-forest-950 text-sm">{rec.recipient_name}</h4>
+                            <Badge variant="stone" size="sm">
+                              {rec.org_type.replace('_', ' ')}
+                            </Badge>
+                          </div>
+                          <div className="flex items-center gap-3 text-xs text-stone-500 mt-1">
+                            <span className="flex items-center gap-1">
+                              <MapPin className="w-3.5 h-3.5 text-stone-400" />
+                              {rec.distance_km} km (~{rec.estimated_travel_time_minutes}m)
+                            </span>
+                            <span>•</span>
+                            <span>Cap: {rec.max_daily_meals} meals/day</span>
+                            {rec.refrigeration_available && (
+                              <>
+                                <span>•</span>
+                                <span className="text-emerald-700 font-medium">Cold Storage Ready</span>
+                              </>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Composite Score Pill */}
+                        <div className="text-right flex-shrink-0">
+                          <div className="inline-flex items-center gap-1 px-2.5 py-1 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold text-xs">
+                            <Sparkles className="w-3 h-3 text-emerald-600" />
+                            <span>{rec.score}% Match</span>
+                          </div>
+                          <span className="block text-[10px] text-stone-400 mt-0.5 capitalize">
+                            Status: {rec.status}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Section 4 Explainable Scoring Breakdown */}
+                      <div className="grid grid-cols-4 gap-1.5 p-2 bg-stone-50 rounded-xl text-center text-[10px]">
+                        <div>
+                          <span className="text-stone-400 block">Distance (35%)</span>
+                          <span className="font-bold text-stone-800">{rec.score_breakdown.distanceScore}</span>
+                        </div>
+                        <div>
+                          <span className="text-stone-400 block">Urgency (30%)</span>
+                          <span className="font-bold text-stone-800">{rec.score_breakdown.urgencyScore}</span>
+                        </div>
+                        <div>
+                          <span className="text-stone-400 block">Capacity (20%)</span>
+                          <span className="font-bold text-stone-800">{rec.score_breakdown.capacityScore}</span>
+                        </div>
+                        <div>
+                          <span className="text-stone-400 block">Reliability (15%)</span>
+                          <span className="font-bold text-stone-800">{rec.score_breakdown.reliabilityScore}</span>
+                        </div>
+                      </div>
+
+                      {/* Human-Readable Explanation */}
+                      <p className="text-[11px] text-stone-600 bg-emerald-50/50 p-2 rounded-lg border border-emerald-100/50">
+                        <span className="font-semibold text-emerald-900">AI Recommendation Reason: </span>
+                        {rec.explanation}
+                      </p>
+                    </div>
+                  ))
+                ) : (
+                  <div className="p-8 text-center text-stone-500 text-xs">
+                    No eligible verified recipients within operational range for this post.
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* TAB 2: SPLIT DONATION PLAN */
+              <div className="space-y-4 max-h-[420px] overflow-y-auto pr-1">
+                <div className="p-3.5 rounded-2xl bg-forest-50 border border-forest-100 text-xs text-forest-900 space-y-1">
+                  <div className="flex items-center gap-2 font-bold">
+                    <ShieldCheck className="w-4 h-4 text-forest-700" />
+                    <span>Redistribution Allocation Strategy</span>
+                  </div>
+                  <p className="text-stone-600 text-[11px]">{splitPlan?.notes}</p>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 text-center">
+                  <div className="p-3 rounded-xl bg-stone-50 border border-stone-200">
+                    <span className="text-[10px] text-stone-500 block uppercase font-bold">Batch Total</span>
+                    <span className="text-lg font-black text-forest-950">{splitPlan?.total_portions} Meals</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                    <span className="text-[10px] text-emerald-700 block uppercase font-bold">Allocated</span>
+                    <span className="text-lg font-black text-emerald-900">{splitPlan?.allocated_portions} Meals</span>
+                  </div>
+                  <div className="p-3 rounded-xl bg-stone-50 border border-stone-200">
+                    <span className="text-[10px] text-stone-500 block uppercase font-bold">Unallocated</span>
+                    <span className="text-lg font-black text-stone-700">{splitPlan?.unallocated_portions} Meals</span>
+                  </div>
+                </div>
+
+                {/* Allocation List */}
+                <div className="space-y-2">
+                  <h5 className="text-xs font-bold uppercase tracking-wider text-stone-500">
+                    Recipient Kitchen Allocations
+                  </h5>
+                  {splitPlan?.allocations && splitPlan.allocations.length > 0 ? (
+                    splitPlan.allocations.map((alloc) => (
+                      <div
+                        key={alloc.recipient_id}
+                        className="p-3.5 rounded-xl bg-white border border-stone-200 space-y-2"
+                      >
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-bold text-forest-950">{alloc.recipient_name}</span>
+                          <span className="font-mono font-bold text-emerald-800">
+                            {alloc.allocated_portions} portions ({alloc.allocated_quantity_kg} kg)
+                          </span>
+                        </div>
+                        {/* Progress Bar */}
+                        <div className="w-full h-2 rounded-full bg-stone-100 overflow-hidden">
+                          <div
+                            className="h-full bg-emerald-600 rounded-full transition-all"
+                            style={{ width: `${alloc.percentage_of_total}%` }}
+                          />
+                        </div>
+                        <div className="flex justify-between items-center text-[10px] text-stone-400">
+                          <span>Proximity: {alloc.distance_km} km</span>
+                          <span>{alloc.percentage_of_total}% of Batch</span>
+                          <span>Score: {alloc.score}%</span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-xs text-stone-500 text-center py-4">No allocations available.</p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Modal>

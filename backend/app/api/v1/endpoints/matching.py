@@ -1,17 +1,16 @@
 """
 Matching Engine and Atomic Acceptance Workflow API Endpoints.
 Implements Stage 1 hard eligibility filters, Stage 2 explainable recipient ranking (35/30/20/15),
-and PostgreSQL row-level locking for atomic donation claims.
+PostgreSQL row-level locking for atomic claims, split-donation allocation, and candidate discovery.
 """
 
 from datetime import datetime, timedelta, timezone
-import math
 import random
 import secrets
 from typing import Any, Dict, List, Optional
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func, select, text, update
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -23,138 +22,17 @@ from app.schemas.matching import (
     AcceptMatchRequest,
     AcceptMatchResponse,
     DeclineMatchRequest,
+    DonationRecipientsResponse,
     MatchRecommendationResponse,
+    MatchRecordResponse,
+    RecipientMatchResponse,
     ScoreBreakdownSchema,
+    SplitDonationPlanResponse,
+    TriggerMatchingResponse,
 )
+from app.services.matching_engine import matching_engine
 
 router = APIRouter()
-
-
-def compute_haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Haversine formula for spherical distance in kilometers between two GPS coordinates."""
-    r = 6371.0  # Earth radius in kilometers
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    delta_phi = math.radians(lat2 - lat1)
-    delta_lambda = math.radians(lon2 - lon1)
-
-    a = (
-        math.sin(delta_phi / 2.0) ** 2
-        + math.cos(phi1) * math.cos(phi2) * math.sin(delta_lambda / 2.0) ** 2
-    )
-    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-    return r * c
-
-
-def evaluate_stage1_hard_filters(
-    recipient: Organization,
-    donation: Donation,
-    dist_km: float,
-) -> bool:
-    """
-    Stage 1 Hard Eligibility Constraints (Section 4):
-    - Recipient must be verified.
-    - Donation status must be 'available' or 'matched' (no unresolved safety hold).
-    - Pickup deadline must be in the future.
-    - Cold storage compatibility: if food requires refrigeration, recipient must have refrigeration.
-    - Transit distance must be within operational city range (< 25 km).
-    """
-    if not recipient.is_verified:
-        return False
-
-    if donation.status not in ("available", "matched"):
-        return False
-
-    now = datetime.now(timezone.utc)
-    deadline = (
-        donation.pickup_deadline
-        if donation.pickup_deadline.tzinfo
-        else donation.pickup_deadline.replace(tzinfo=timezone.utc)
-    )
-    if deadline <= now:
-        return False
-
-    if donation.storage_condition in ("refrigerated", "frozen", "dairy_chilled"):
-        if not recipient.refrigeration_available:
-            return False
-
-    if dist_km > 25.0:
-        return False
-
-    return True
-
-
-def calculate_stage2_ranked_score(
-    recipient: Organization,
-    donation: Donation,
-    dist_km: float,
-) -> tuple[ScoreBreakdownSchema, str, int]:
-    """
-    Stage 2 Heuristic Ranking Breakdown (Section 4):
-    - Distance (35% weight)
-    - Urgency (30% weight)
-    - Capacity (20% weight)
-    - Reliability (15% weight)
-    """
-    now = datetime.now(timezone.utc)
-    deadline = (
-        donation.pickup_deadline
-        if donation.pickup_deadline.tzinfo
-        else donation.pickup_deadline.replace(tzinfo=timezone.utc)
-    )
-
-    # 1. Distance Score (35%): Shorter travel = higher score
-    distance_score = round(max(0.0, min(100.0, 100.0 - (dist_km * 7.0))), 1)
-
-    # 2. Urgency Score (30%): Imminent deadline = higher rescue urgency
-    time_remaining_hours = max(0.1, (deadline - now).total_seconds() / 3600.0)
-    if time_remaining_hours <= 1.0:
-        urgency_score = 98.0
-    elif time_remaining_hours <= 2.5:
-        urgency_score = 92.0
-    elif time_remaining_hours <= 4.0:
-        urgency_score = 82.0
-    else:
-        urgency_score = 70.0
-
-    # 3. Capacity Score (20%): Match portions with recipient daily capacity
-    capacity_ratio = recipient.max_daily_meals / max(1, donation.portions)
-    if capacity_ratio >= 1.5:
-        capacity_score = 95.0
-    elif capacity_ratio >= 0.8:
-        capacity_score = 88.0
-    else:
-        capacity_score = 65.0
-
-    # 4. Reliability Score (15%): Recipient audit compliance rating
-    reliability_score = 95.0
-
-    # Total Composite Score
-    total_score = round(
-        (0.35 * distance_score)
-        + (0.30 * urgency_score)
-        + (0.20 * capacity_score)
-        + (0.15 * reliability_score),
-        1,
-    )
-
-    # Estimated driving transit time: ~2.5 mins per km + 5 mins baseline handling
-    travel_time_mins = max(5, int(dist_km * 2.5 + 5))
-
-    explanation = (
-        f"High proximity ({dist_km:.1f} km, ~{travel_time_mins} mins). "
-        f"Capacity alignment ({recipient.max_daily_meals} meals/day capacity for {donation.portions} portions). "
-        f"Pickup window closes in {time_remaining_hours:.1f} hours."
-    )
-
-    breakdown = ScoreBreakdownSchema(
-        distanceScore=distance_score,
-        urgencyScore=urgency_score,
-        capacityScore=capacity_score,
-        reliabilityScore=reliability_score,
-        totalScore=total_score,
-    )
-    return breakdown, explanation, travel_time_mins
 
 
 @router.get(
@@ -169,7 +47,7 @@ async def get_recommendations(
 ) -> ResponseEnvelope[List[MatchRecommendationResponse]]:
     """
     Returns candidate surplus food offers filtered through Stage 1 hard constraints
-    and sorted by Stage 2 explainable ranking scores.
+    and sorted by Stage 2 explainable ranking scores for the recipient organization.
     """
     target_org_id = recipient_id or current_user.organization_id
     if not target_org_id:
@@ -206,21 +84,21 @@ async def get_recommendations(
             continue
 
         # Calculate geospatial distance
-        dist_km = compute_haversine_km(
+        dist_km = matching_engine.compute_haversine_km(
             recipient.latitude, recipient.longitude,
-            donor_org.latitude, donor_org.longitude
+            donor_org.latitude, donor_org.longitude,
         )
 
         # Stage 1: Hard eligibility check
-        if not evaluate_stage1_hard_filters(recipient, d, dist_km):
+        is_eligible, _ = matching_engine.evaluate_stage1_hard_filters(recipient, d, dist_km)
+        if not is_eligible:
             continue
 
         # Stage 2: Calculate 35/30/20/15 heuristic score
-        breakdown, explanation, travel_time = calculate_stage2_ranked_score(
-            recipient, d, dist_km
+        breakdown, explanation, travel_time = await matching_engine.calculate_stage2_ranked_score(
+            recipient, d, dist_km, db
         )
 
-        # Construct frontend-compatible donation representation
         donation_dict = {
             "id": str(d.id),
             "donorOrgId": str(donor_org.id),
@@ -238,7 +116,7 @@ async def get_recommendations(
             "status": d.status,
             "pickupLocation": {
                 "address": donor_org.address,
-                "city": "Downtown Core",
+                "city": "Metro Core",
                 "latitude": donor_org.latitude,
                 "longitude": donor_org.longitude,
                 "postalCode": donor_org.postal_code,
@@ -261,19 +139,251 @@ async def get_recommendations(
         recommendations.append(rec)
 
     # Sort descending by composite score
-    recommendations.sort(key=lambda x: x.scoreBreakdown.totalScore, reverse=True)
+    recommendations.sort(key=lambda r: r.scoreBreakdown.totalScore, reverse=True)
 
     return ResponseEnvelope[List[MatchRecommendationResponse]](
         success=True,
-        message=f"Generated {len(recommendations)} ranked surplus food recommendations.",
+        message=f"Retrieved {len(recommendations)} eligible surplus food match recommendations.",
         data=recommendations,
+    )
+
+
+@router.get(
+    "/donations/{donation_id}/recipients",
+    response_model=ResponseEnvelope[DonationRecipientsResponse],
+    summary="Get ranked eligible recipients for a specific donation (Donors & Admins)",
+)
+async def get_donation_recipients(
+    donation_id: uuid.UUID,
+    current_user: User = Depends(require_role("donor", "admin")),
+    db: AsyncSession = Depends(get_db),
+) -> ResponseEnvelope[DonationRecipientsResponse]:
+    """
+    Ranks all eligible recipient NGOs in the city for a specific donation post,
+    displaying score breakdowns, proximity, and operational capacity.
+    """
+    stmt = (
+        select(Donation)
+        .options(selectinload(Donation.donor_organization))
+        .where(Donation.id == donation_id)
+    )
+    res = await db.execute(stmt)
+    donation = res.scalar_one_or_none()
+    if not donation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Donation post could not be found.",
+        )
+
+    # Authorization check for donor: must own the donation unless admin
+    if current_user.role == "donor" and donation.donor_organization_id != current_user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to view matches for this donation.",
+        )
+
+    candidates = await matching_engine.find_and_rank_recipients(donation, db)
+
+    # Fetch any existing match records to include match_id
+    matches_stmt = select(Match).where(Match.donation_id == donation.id)
+    matches_res = await db.execute(matches_stmt)
+    matches_map = {m.recipient_organization_id: m for m in matches_res.scalars().all()}
+
+    recipient_responses: List[RecipientMatchResponse] = []
+    for cand in candidates:
+        r = cand["recipient"]
+        match_obj = matches_map.get(r.id)
+
+        recipient_responses.append(
+            RecipientMatchResponse(
+                recipient_id=r.id,
+                recipient_name=r.name,
+                org_type=r.org_type,
+                address=r.address,
+                contact_phone=r.contact_phone,
+                distance_km=cand["distance_km"],
+                estimated_travel_time_minutes=cand["travel_time_mins"],
+                max_daily_meals=r.max_daily_meals,
+                refrigeration_available=r.refrigeration_available,
+                score=cand["score"],
+                score_breakdown=cand["score_breakdown"],
+                explanation=cand["explanation"],
+                status=match_obj.status if match_obj else "suggested",
+                match_id=match_obj.id if match_obj else None,
+            )
+        )
+
+    data = DonationRecipientsResponse(
+        donation_id=donation.id,
+        title=donation.title,
+        food_type=donation.food_type,
+        quantity_kg=donation.quantity_kg,
+        portions=donation.portions,
+        pickup_deadline=donation.pickup_deadline,
+        recipients=recipient_responses,
+        total_eligible=len(recipient_responses),
+    )
+
+    return ResponseEnvelope[DonationRecipientsResponse](
+        success=True,
+        message=f"Found {len(recipient_responses)} eligible recipient kitchens for this surplus post.",
+        data=data,
+    )
+
+
+@router.get(
+    "/donations/{donation_id}/split-plan",
+    response_model=ResponseEnvelope[SplitDonationPlanResponse],
+    summary="Get multi-recipient split allocation plan for large surplus batches",
+)
+async def get_split_plan(
+    donation_id: uuid.UUID,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> ResponseEnvelope[SplitDonationPlanResponse]:
+    """
+    Computes a split-donation redistribution plan across multiple community kitchens
+    to ensure full rescue without overwhelming any single facility.
+    """
+    stmt = (
+        select(Donation)
+        .options(selectinload(Donation.donor_organization))
+        .where(Donation.id == donation_id)
+    )
+    res = await db.execute(stmt)
+    donation = res.scalar_one_or_none()
+    if not donation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Donation post could not be found.",
+        )
+
+    split_plan = await matching_engine.calculate_split_plan(donation, db)
+
+    return ResponseEnvelope[SplitDonationPlanResponse](
+        success=True,
+        message="Split donation redistribution plan calculated successfully.",
+        data=split_plan,
+    )
+
+
+@router.post(
+    "/trigger/{donation_id}",
+    response_model=ResponseEnvelope[TriggerMatchingResponse],
+    summary="Trigger AI matching engine on demand for a donation (Donors & Admins)",
+)
+async def trigger_matching(
+    donation_id: uuid.UUID,
+    current_user: User = Depends(require_role("donor", "admin")),
+    db: AsyncSession = Depends(get_db),
+) -> ResponseEnvelope[TriggerMatchingResponse]:
+    """
+    Executes the matching engine for a donation post, generates persistent Match records,
+    and dispatches notifications to recipient coordinators.
+    """
+    stmt = select(Donation).where(Donation.id == donation_id)
+    res = await db.execute(stmt)
+    donation = res.scalar_one_or_none()
+    if not donation:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Donation post could not be found.",
+        )
+
+    if current_user.role == "donor" and donation.donor_organization_id != current_user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You are not authorized to trigger matching for this donation.",
+        )
+
+    matches = await matching_engine.match_and_persist_donation(donation.id, db, notify=True)
+
+    top_name = None
+    top_score = None
+    if matches:
+        top_match = matches[0]
+        top_score = top_match.score
+        top_org_res = await db.execute(
+            select(Organization.name).where(Organization.id == top_match.recipient_organization_id)
+        )
+        top_name = top_org_res.scalar_one_or_none()
+
+    result = TriggerMatchingResponse(
+        donation_id=donation.id,
+        matches_generated=len(matches),
+        top_recipient_name=top_name,
+        top_score=top_score,
+        notifications_dispatched=len(matches),
+        status="matched" if matches else "no_eligible_matches",
+    )
+
+    return ResponseEnvelope[TriggerMatchingResponse](
+        success=True,
+        message=f"Matching completed. Generated {len(matches)} persistent recipient pairings.",
+        data=result,
+    )
+
+
+@router.get(
+    "/matches",
+    response_model=ResponseEnvelope[List[MatchRecordResponse]],
+    summary="Query persistent Match records with filters",
+)
+async def list_matches(
+    donation_id: Optional[uuid.UUID] = Query(None, alias="donationId"),
+    recipient_org_id: Optional[uuid.UUID] = Query(None, alias="recipientOrgId"),
+    match_status: Optional[str] = Query(None, alias="status"),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+) -> ResponseEnvelope[List[MatchRecordResponse]]:
+    """List existing persistent match records with optional filtering."""
+    query = select(Match).options(selectinload(Match.recipient_organization))
+
+    # Apply role scoping
+    if current_user.role == "ngo" and current_user.organization_id:
+        query = query.where(Match.recipient_organization_id == current_user.organization_id)
+    elif current_user.role == "donor" and current_user.organization_id:
+        query = query.join(Donation).where(Donation.donor_organization_id == current_user.organization_id)
+
+    if donation_id:
+        query = query.where(Match.donation_id == donation_id)
+    if recipient_org_id and current_user.role == "admin":
+        query = query.where(Match.recipient_organization_id == recipient_org_id)
+    if match_status:
+        query = query.where(Match.status == match_status)
+
+    query = query.order_by(Match.score.desc())
+    res = await db.execute(query)
+    matches = res.scalars().all()
+
+    response_list: List[MatchRecordResponse] = []
+    for m in matches:
+        rec_name = m.recipient_organization.name if m.recipient_organization else None
+        response_list.append(
+            MatchRecordResponse(
+                id=m.id,
+                donation_id=m.donation_id,
+                recipient_organization_id=m.recipient_organization_id,
+                recipient_name=rec_name,
+                score=m.score,
+                score_breakdown=m.score_breakdown,
+                status=m.status,
+                created_at=m.created_at,
+                updated_at=m.updated_at,
+            )
+        )
+
+    return ResponseEnvelope[List[MatchRecordResponse]](
+        success=True,
+        message=f"Retrieved {len(response_list)} match records.",
+        data=response_list,
     )
 
 
 @router.post(
     "/accept",
     response_model=ResponseEnvelope[AcceptMatchResponse],
-    summary="Atomically accept and claim a surplus food donation offer",
+    summary="Atomically claim surplus food donation offer",
 )
 async def accept_match(
     payload: AcceptMatchRequest,
@@ -281,163 +391,214 @@ async def accept_match(
     db: AsyncSession = Depends(get_db),
 ) -> ResponseEnvelope[AcceptMatchResponse]:
     """
-    Atomic claim execution with PostgreSQL row-level locking (SELECT ... FOR UPDATE).
-    Enforces Section 8 invariant: 'A donation cannot be claimed twice by competing recipients'.
-    Prevents race conditions, transitions status to 'accepted', and creates the Pickup record.
+    Enforces atomic acceptance of a surplus food donation offer.
+    Uses PostgreSQL row-level locking (SELECT ... FOR UPDATE) to ensure
+    that competing claims return a 409 Conflict.
+    Transitions donation status to 'accepted' and generates operational Pickup record.
     """
-    recipient_org_id = payload.recipient_org_id or current_user.organization_id
-    if not recipient_org_id:
+    target_org_id = payload.recipient_org_id or current_user.organization_id
+    if not target_org_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Recipient organization identifier is required to claim a donation.",
+            detail="Recipient organization ID is required to accept a donation.",
         )
 
-    # 1. Row-level lock on the donation record using with_for_update()
-    donation_stmt = (
+    # 1. Acquire Row-Level Lock on Donation record (SELECT ... FOR UPDATE)
+    lock_stmt = (
         select(Donation)
         .where(Donation.id == payload.donation_id)
         .with_for_update()
     )
-    donation_res = await db.execute(donation_stmt)
-    donation = donation_res.scalar_one_or_none()
+    lock_result = await db.execute(lock_stmt)
+    donation = lock_result.scalar_one_or_none()
 
     if not donation:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Donation listing not found.",
+            detail="The requested donation does not exist.",
         )
 
-    # 2. Concurrency check: Ensure donation has not already been claimed
+    # 2. Enforce Concurrency Invariant: Must be in 'available' or 'matched' state
     if donation.status not in ("available", "matched"):
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Offer is no longer available (current status: '{donation.status}'). "
-                f"Another community organization has already claimed this batch."
-            ),
+            detail=f"Donation cannot be claimed because its current status is '{donation.status}'. It may have already been claimed by another recipient.",
         )
 
-    # 3. Transition donation state to 'accepted'
+    # 3. Check Pickup Deadline
+    now = datetime.now(timezone.utc)
+    deadline = (
+        donation.pickup_deadline
+        if donation.pickup_deadline.tzinfo
+        else donation.pickup_deadline.replace(tzinfo=timezone.utc)
+    )
+    if deadline <= now:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot claim donation because the pickup collection window has expired.",
+        )
+
+    # 4. Verify Recipient Organization is active & verified
+    org_res = await db.execute(
+        select(Organization).where(Organization.id == target_org_id)
+    )
+    recipient_org = org_res.scalar_one_or_none()
+    if not recipient_org:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recipient organization could not be found.",
+        )
+    if not recipient_org.is_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Recipient organization must be verified by an administrator before claiming food donations.",
+        )
+
+    # 5. Transition Donation Status to 'accepted'
+    previous_status = donation.status
     donation.status = "accepted"
 
-    # 4. Generate secure 6-digit backup PIN and single-use verification token
-    verification_pin = str(random.randint(100000, 999999))
-    verification_token = f"vtok_{secrets.token_urlsafe(24)}"
-    token_expires_at = donation.pickup_deadline
+    # 6. Generate Single-Use 6-Digit Backup PIN and Verification Token
+    verification_pin = f"{random.randint(100000, 999999)}"
+    verification_token = secrets.token_urlsafe(32)
 
-    # 5. Create Pickup operational record
+    # 7. Create Operational Pickup Record
+    scheduled_pickup = datetime.now(timezone.utc) + timedelta(minutes=45)
     pickup = Pickup(
         donation_id=donation.id,
-        recipient_organization_id=recipient_org_id,
+        recipient_organization_id=recipient_org.id,
         status="pending_volunteer",
-        scheduled_pickup_time=datetime.utcnow() + timedelta(minutes=30),
-        estimated_delivery_time=datetime.utcnow() + timedelta(minutes=75),
         verification_pin=verification_pin,
         verification_token=verification_token,
-        token_expires_at=token_expires_at,
-        is_token_used=False,
+        token_expires_at=donation.pickup_deadline,
+        scheduled_pickup_time=scheduled_pickup,
     )
     db.add(pickup)
+    await db.flush()
 
-    # 6. Create or update Match pairing record
-    match_stmt = (
-        select(Match)
-        .where(
-            Match.donation_id == donation.id,
-            Match.recipient_organization_id == recipient_org_id,
-        )
+    # 8. Update Match status to 'accepted'
+    match_stmt = select(Match).where(
+        Match.donation_id == donation.id,
+        Match.recipient_organization_id == recipient_org.id,
     )
     match_res = await db.execute(match_stmt)
-    match = match_res.scalar_one_or_none()
-
-    if match:
-        match.status = "accepted"
+    matched_entry = match_res.scalar_one_or_none()
+    if matched_entry:
+        matched_entry.status = "accepted"
     else:
-        match = Match(
+        new_match = Match(
             donation_id=donation.id,
-            recipient_organization_id=recipient_org_id,
+            recipient_organization_id=recipient_org.id,
             score=95.0,
-            score_breakdown={"distance": 92.0, "urgency": 90.0, "capacity": 95.0, "reliability": 95.0},
+            score_breakdown={"total": 95.0, "status": "direct_acceptance"},
             status="accepted",
         )
-        db.add(match)
+        db.add(new_match)
 
-    # 7. Record immutable audit log entry
+    # Set competing suggested matches for this donation to 'expired'
+    expire_stmt = (
+        update(Match)
+        .where(
+            Match.donation_id == donation.id,
+            Match.recipient_organization_id != recipient_org.id,
+            Match.status == "suggested",
+        )
+        .values(status="expired")
+    )
+    await db.execute(expire_stmt)
+
+    # 9. Record Immutable Audit Log
     audit_entry = AuditLog(
-        entity_type="donation",
+        entity_type="match",
         entity_id=donation.id,
         action="MATCH_ACCEPTED",
         actor_id=current_user.id,
         actor_role=current_user.role,
+        payload_before={"status": previous_status},
         payload_after={
-            "recipient_organization_id": str(recipient_org_id),
             "status": "accepted",
+            "recipient_organization_id": str(recipient_org.id),
+            "recipient_organization_name": recipient_org.name,
             "pickup_id": str(pickup.id),
+            "verification_pin": verification_pin,
         },
         ip_address="127.0.0.1",
     )
     db.add(audit_entry)
 
-    # Commit atomic claim transaction
+    # 10. Commit the transaction to release row lock
     await db.commit()
     await db.refresh(pickup)
 
     response_data = AcceptMatchResponse(
         success=True,
         donation_id=donation.id,
-        recipient_org_id=recipient_org_id,
+        recipient_org_id=recipient_org.id,
         pickup_id=pickup.id,
         status="accepted",
         verification_pin=verification_pin,
-        scheduled_pickup_time=pickup.scheduled_pickup_time,
-        message="Donation offer accepted successfully. Pickup has been scheduled for volunteer dispatch.",
+        scheduled_pickup_time=scheduled_pickup,
+        message=f"Donation offer accepted for {recipient_org.name}. Backup verification PIN: {verification_pin}",
     )
 
     return ResponseEnvelope[AcceptMatchResponse](
         success=True,
-        message="Donation offer accepted successfully. Atomic claim secured.",
+        message="Donation offer successfully claimed and assigned for volunteer dispatch.",
         data=response_data,
     )
 
 
 @router.post(
     "/decline",
-    summary="Decline a surplus donation recommendation",
+    response_model=ResponseEnvelope[Dict[str, Any]],
+    summary="Decline surplus food donation offer",
 )
 async def decline_match(
     payload: DeclineMatchRequest,
     current_user: User = Depends(require_role("ngo", "admin")),
     db: AsyncSession = Depends(get_db),
-) -> dict:
-    """Records recipient decline so the matching engine will prioritize other candidates."""
-    recipient_org_id = payload.recipient_org_id or current_user.organization_id
-    if not recipient_org_id:
+) -> ResponseEnvelope[Dict[str, Any]]:
+    """Records a recipient decline of a surplus donation offer."""
+    target_org_id = payload.recipient_org_id or current_user.organization_id
+    if not target_org_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Recipient organization identifier is required.",
+            detail="Recipient organization ID is required.",
         )
 
-    match_stmt = (
-        select(Match)
-        .where(
-            Match.donation_id == payload.donation_id,
-            Match.recipient_organization_id == recipient_org_id,
-        )
+    match_stmt = select(Match).where(
+        Match.donation_id == payload.donation_id,
+        Match.recipient_organization_id == target_org_id,
     )
     match_res = await db.execute(match_stmt)
-    match = match_res.scalar_one_or_none()
+    matched_entry = match_res.scalar_one_or_none()
 
-    if match:
-        match.status = "declined"
+    if matched_entry:
+        matched_entry.status = "declined"
     else:
-        match = Match(
+        new_match = Match(
             donation_id=payload.donation_id,
-            recipient_organization_id=recipient_org_id,
-            score=50.0,
-            score_breakdown={},
+            recipient_organization_id=target_org_id,
+            score=0.0,
+            score_breakdown={"reason": payload.reason or "Declined by recipient"},
             status="declined",
         )
-        db.add(match)
+        db.add(new_match)
 
+    audit_entry = AuditLog(
+        entity_type="match",
+        entity_id=payload.donation_id,
+        action="MATCH_DECLINED",
+        actor_id=current_user.id,
+        actor_role=current_user.role,
+        payload_after={"reason": payload.reason},
+        ip_address="127.0.0.1",
+    )
+    db.add(audit_entry)
     await db.commit()
-    return {"success": True, "message": "Recommendation declined."}
+
+    return ResponseEnvelope[Dict[str, Any]](
+        success=True,
+        message="Donation offer declined successfully.",
+        data={"donation_id": str(payload.donation_id), "status": "declined"},
+    )

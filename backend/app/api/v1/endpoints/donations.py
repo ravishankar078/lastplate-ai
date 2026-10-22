@@ -150,13 +150,26 @@ async def create_donation(
     await db.commit()
     await db.refresh(donation)
 
+    # Automated Trigger: Match with verified recipients and dispatch notifications
+    if initial_status == "available":
+        try:
+            from app.services.matching_engine import matching_engine
+            await matching_engine.match_and_persist_donation(donation.id, db, notify=True)
+            await db.refresh(donation)
+        except Exception as e:
+            logger.warning(f"Automated matching engine background execution encountered an issue: {e}")
+
     response_data = DonationResponse.model_validate(donation)
     response_data.donor_organization_name = donor_org.name
 
     status_msg = (
-        "Surplus listing created and available for matching."
-        if initial_status == "available"
-        else "Surplus listing created but held for safety inspection."
+        "Surplus listing created and matched with eligible recipients."
+        if donation.status == "matched"
+        else (
+            "Surplus listing created and available for matching."
+            if initial_status == "available"
+            else "Surplus listing created but held for safety inspection."
+        )
     )
 
     return ResponseEnvelope[DonationResponse](

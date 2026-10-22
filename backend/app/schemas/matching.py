@@ -1,5 +1,5 @@
 """
-Pydantic Schemas for AI Match Recommendations and Atomic Acceptance Workflow.
+Pydantic Schemas for AI Match Recommendations, Recipient Ranking, and Atomic Acceptance.
 Enforces Section 4 explainable scoring and Section 8 atomic claim contracts.
 """
 
@@ -33,6 +33,90 @@ class MatchRecommendationResponse(BaseModel):
     status: str
     expiresAt: str
     createdAt: str
+
+
+class RecipientMatchResponse(BaseModel):
+    """Candidate recipient NGO recommendation for a specific surplus donation."""
+
+    recipient_id: uuid.UUID
+    recipient_name: str
+    org_type: str
+    address: str
+    contact_phone: str
+    distance_km: float
+    estimated_travel_time_minutes: int
+    max_daily_meals: int
+    refrigeration_available: bool
+    score: float
+    score_breakdown: ScoreBreakdownSchema
+    explanation: str
+    status: str = "suggested"
+    match_id: Optional[uuid.UUID] = None
+
+
+class DonationRecipientsResponse(BaseModel):
+    """Ranked eligible recipients for a specific posted donation."""
+
+    donation_id: uuid.UUID
+    title: str
+    food_type: str
+    quantity_kg: float
+    portions: int
+    pickup_deadline: datetime
+    recipients: List[RecipientMatchResponse]
+    total_eligible: int
+
+
+class SplitDonationAllocationItem(BaseModel):
+    """Individual recipient allocation within a split-donation redistribution plan."""
+
+    recipient_id: uuid.UUID
+    recipient_name: str
+    allocated_portions: int
+    allocated_quantity_kg: float
+    percentage_of_total: float
+    distance_km: float
+    score: float
+
+
+class SplitDonationPlanResponse(BaseModel):
+    """Multi-recipient split donation distribution plan."""
+
+    donation_id: uuid.UUID
+    total_portions: int
+    total_quantity_kg: float
+    is_split_recommended: bool
+    allocated_portions: int
+    unallocated_portions: int
+    allocations: List[SplitDonationAllocationItem]
+    notes: str
+
+
+class MatchRecordResponse(BaseModel):
+    """Representation of a persistent Match database record."""
+
+    id: uuid.UUID
+    donation_id: uuid.UUID
+    recipient_organization_id: uuid.UUID
+    recipient_name: Optional[str] = None
+    score: float
+    score_breakdown: Dict[str, Any]
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class TriggerMatchingResponse(BaseModel):
+    """Result summary of automated or on-demand matching engine execution."""
+
+    donation_id: uuid.UUID
+    matches_generated: int
+    top_recipient_name: Optional[str] = None
+    top_score: Optional[float] = None
+    notifications_dispatched: int
+    status: str
 
 
 class AcceptMatchRequest(BaseModel):
