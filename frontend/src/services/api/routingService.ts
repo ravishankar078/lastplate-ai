@@ -3,7 +3,7 @@
  */
 
 import apiClient from './client';
-import { AutoDispatchResult, OptimizedRoutePlan } from '../../types';
+import { AutoDispatchResult, OptimizedRoutePlan, CourierTelemetry } from '../../types';
 
 export const routingService = {
   async runAutoDispatch(): Promise<AutoDispatchResult> {
@@ -37,6 +37,34 @@ export const routingService = {
     } catch (err) {
       console.warn('[Routing API] Error calling /routing/optimize:', err);
       return { routes: fallbackDispatchResult.routes, message: 'Demo fallback optimization' };
+    }
+  },
+
+  async getActiveCouriers(): Promise<CourierTelemetry[]> {
+    try {
+      const res = await apiClient.get<{ success: boolean; data: { active_couriers: CourierTelemetry[] } }>(
+        '/ws/telemetry/couriers'
+      );
+      if (res.data && res.data.data && Array.isArray(res.data.data.active_couriers)) {
+        return res.data.data.active_couriers;
+      }
+      return [];
+    } catch (err) {
+      console.debug('[Routing API] Error fetching courier telemetry:', err);
+      return [];
+    }
+  },
+
+  async broadcastAlert(payload: { title: string; message: string; priority?: string; channel?: string; role?: string }): Promise<boolean> {
+    try {
+      const res = await apiClient.post<{ success: boolean }>(
+        '/ws/broadcast',
+        payload
+      );
+      return res.data?.success ?? true;
+    } catch (err) {
+      console.debug('[Routing API] Error broadcasting system alert:', err);
+      return false;
     }
   },
 };

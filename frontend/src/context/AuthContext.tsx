@@ -85,6 +85,8 @@ const DEMO_USERS: Record<UserRole, User> = {
   },
 };
 
+import { socketService } from '../services/websocket/socketService';
+
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('lastplate_user');
@@ -108,8 +110,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     if (token) {
       localStorage.setItem('lastplate_token', token);
+      socketService.setToken(token);
     } else {
       localStorage.removeItem('lastplate_token');
+      socketService.setToken(null);
     }
   }, [token]);
 

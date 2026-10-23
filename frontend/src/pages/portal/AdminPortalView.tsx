@@ -10,7 +10,11 @@ import {
   MapPin,
   Thermometer,
   Zap,
-  Flame
+  Flame,
+  Radio,
+  Activity,
+  Send,
+  Compass
 } from 'lucide-react';
 import { Button } from '../../components/common/Button';
 import { Badge } from '../../components/common/Badge';
@@ -22,7 +26,8 @@ import { useAuth } from '../../context/AuthContext';
 import { useNotification } from '../../context/NotificationContext';
 import { adminService } from '../../services/api/adminService';
 import { routingService } from '../../services/api/routingService';
-import { Organization, AuditLogEntry, AutoDispatchResult } from '../../types';
+import { socketService } from '../../services/websocket/socketService';
+import { Organization, AuditLogEntry, AutoDispatchResult, CourierTelemetry } from '../../types';
 
 export const AdminPortalView: React.FC = () => {
   const { user } = useAuth();
@@ -35,6 +40,12 @@ export const AdminPortalView: React.FC = () => {
   // OR-Tools Dispatch state
   const [dispatchResult, setDispatchResult] = useState<AutoDispatchResult | null>(null);
   const [runningDispatch, setRunningDispatch] = useState(false);
+
+  // Phase 11: Real-Time Telemetry & WebSocket state
+  const [wsConnected, setWsConnected] = useState<boolean>(socketService.isConnected());
+  const [couriers, setCouriers] = useState<CourierTelemetry[]>([]);
+  const [alertMessage, setAlertMessage] = useState<string>('');
+  const [sendingAlert, setSendingAlert] = useState<boolean>(false);
 
   const loadAdminData = async () => {
     setLoading(true);
@@ -50,6 +61,84 @@ export const AdminPortalView: React.FC = () => {
   useEffect(() => {
     loadAdminData();
   }, []);
+
+  // Phase 11: Real-time telemetry subscription & courier tracking
+  useEffect(() => {
+    // Subscribe to dispatch channel
+    socketService.subscribe('dispatch');
+    setWsConnected(socketService.isConnected());
+
+    const unsubStatus = socketService.on('connection_status', ({ connected }: { connected: boolean }) => {
+      setWsConnected(connected);
+    });
+
+    const unsubLocation = socketService.on('courier_location', (data: CourierTelemetry) => {
+      setCouriers((prev) => {
+        const idx = prev.findIndex((c) => c.courier_id === data.courier_id);
+        if (idx >= 0) {
+          const updated = [...prev];
+          updated[idx] = data;
+          return updated;
+        }
+        return [data, ...prev];
+      });
+    });
+
+    // Initial fetch of active couriers
+    routingService.getActiveCouriers().then((initialCouriers) => {
+      if (initialCouriers && initialCouriers.length > 0) {
+        setCouriers(initialCouriers);
+      }
+    });
+
+    return () => {
+      unsubStatus();
+      unsubLocation();
+    };
+  }, []);
+
+  const handleBroadcastAlert = async () => {
+    if (!alertMessage.trim()) return;
+    setSendingAlert(true);
+    const ok = await routingService.broadcastAlert({
+      title: 'Fleet Command Notice',
+      message: alertMessage.trim(),
+      priority: 'high',
+      channel: 'global',
+    });
+    setSendingAlert(false);
+    if (ok) {
+      showToast('Broadcast Dispatched', 'Real-time alert transmitted across all connected WebSocket clients.', 'success');
+      setAlertMessage('');
+    } else {
+      showToast('Broadcast Failed', 'Could not transmit alert over network.', 'error');
+    }
+  };
+
+  const handleSimulateTelemetry = () => {
+    const courierId = 'courier-01';
+    const simulated: CourierTelemetry = {
+      courier_id: courierId,
+      courier_name: 'Priya Sharma (Bicycle Courier)',
+      latitude: Number((12.9716 + (Math.random() - 0.5) * 0.008).toFixed(4)),
+      longitude: Number((77.5946 + (Math.random() - 0.5) * 0.008).toFixed(4)),
+      speed_kmh: Math.round(14 + Math.random() * 8),
+      heading_deg: Math.round(Math.random() * 360),
+      timestamp: new Date().toISOString(),
+    };
+    socketService.sendCourierLocation(simulated);
+    // Update local state optimistically
+    setCouriers((prev) => {
+      const idx = prev.findIndex((c) => c.courier_id === simulated.courier_id);
+      if (idx >= 0) {
+        const updated = [...prev];
+        updated[idx] = simulated;
+        return updated;
+      }
+      return [simulated, ...prev];
+    });
+    showToast('GPS Telemetry Emitted', `Streamed live GPS update for ${simulated.courier_name} over WebSocket.`, 'info');
+  };
 
   const handleVerifyOrg = async (orgId: string, orgName: string) => {
     const updated = await adminService.verifyOrganization(orgId);
@@ -324,6 +413,136 @@ export const AdminPortalView: React.FC = () => {
               >
                 {runningDispatch ? 'Solving VRP Engine...' : 'Run Fleet Auto-Dispatch'}
               </Button>
+            </div>
+
+            {/* Phase 11: Real-Time Fleet Telemetry & WebSocket Event Console */}
+            <div className="bg-stone-900 border border-stone-800 rounded-3xl p-6 text-stone-100 shadow-xl space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-stone-800">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-2xl bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
+                    <Radio className={`w-5 h-5 ${wsConnected ? 'animate-pulse' : ''}`} />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-serif text-lg font-bold text-white">
+                        Live Fleet Telemetry & Event Stream
+                      </h4>
+                      {wsConnected ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                          WS CONNECTED
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                          CONNECTING...
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-stone-400">
+                      Channel: <span className="font-mono text-emerald-400 font-bold">dispatch</span> &bull; Telemetry Stream: <span className="font-mono text-stone-300">127.0.0.1:8000/api/v1/ws/stream</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleSimulateTelemetry}
+                    leftIcon={<Compass className="w-4 h-4 text-emerald-400" />}
+                    className="border-stone-700 hover:bg-stone-800 text-stone-200 text-xs"
+                  >
+                    Simulate Courier GPS
+                  </Button>
+                </div>
+              </div>
+
+              {/* Active Couriers Telemetry List */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between text-xs text-stone-400">
+                  <span className="font-bold uppercase tracking-wider text-[11px] text-stone-400">
+                    Active GPS Feeds ({couriers.length})
+                  </span>
+                  <span className="text-[11px] text-stone-500">
+                    Auto-refreshed via WebSocket frames
+                  </span>
+                </div>
+
+                {couriers.length === 0 ? (
+                  <div className="p-6 rounded-2xl bg-stone-950/60 border border-stone-800/80 text-center space-y-2">
+                    <Activity className="w-8 h-8 text-stone-600 mx-auto" />
+                    <p className="text-xs text-stone-400 font-medium">
+                      GPS stream listening on channel <strong className="text-stone-300">dispatch</strong>.
+                    </p>
+                    <p className="text-[11px] text-stone-500 max-w-sm mx-auto">
+                      Couriers transmit live coordinates every 10 seconds during food rescue missions. Click "Simulate Courier GPS" to emit a mock packet.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {couriers.map((c) => (
+                      <div
+                        key={c.courier_id}
+                        className="p-4 rounded-2xl bg-stone-950/80 border border-stone-800 hover:border-emerald-500/40 transition-colors space-y-2"
+                      >
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                            <span className="font-bold text-xs text-white">
+                              {c.courier_name || `Courier #${c.courier_id.slice(0, 8)}`}
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-stone-800 text-emerald-300">
+                            {c.speed_kmh ?? 0} km/h
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2 text-[11px] font-mono text-stone-300 pt-1">
+                          <div className="bg-stone-900/90 px-2.5 py-1.5 rounded-lg border border-stone-800">
+                            <span className="text-stone-500 block text-[9px] uppercase">Latitude</span>
+                            {c.latitude.toFixed(4)}° N
+                          </div>
+                          <div className="bg-stone-900/90 px-2.5 py-1.5 rounded-lg border border-stone-800">
+                            <span className="text-stone-500 block text-[9px] uppercase">Longitude</span>
+                            {c.longitude.toFixed(4)}° E
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between text-[10px] text-stone-500 pt-1 border-t border-stone-800/80">
+                          <span>Heading: {c.heading_deg ?? 0}°</span>
+                          <span>Ping: {new Date(c.timestamp).toLocaleTimeString()}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* System-Wide Realtime Broadcast Bar */}
+              <div className="pt-2 border-t border-stone-800 flex flex-col sm:flex-row items-center gap-3">
+                <div className="relative flex-1 w-full">
+                  <input
+                    type="text"
+                    value={alertMessage}
+                    onChange={(e) => setAlertMessage(e.target.value)}
+                    placeholder="Broadcast urgent notification to all connected couriers, NGOs & donors..."
+                    className="w-full bg-stone-950 border border-stone-800 rounded-xl px-3.5 py-2 text-xs text-stone-200 placeholder:text-stone-600 focus:outline-none focus:border-emerald-500"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleBroadcastAlert();
+                    }}
+                  />
+                </div>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={sendingAlert || !alertMessage.trim()}
+                  onClick={handleBroadcastAlert}
+                  leftIcon={<Send className="w-3.5 h-3.5" />}
+                  className="shrink-0 text-xs"
+                >
+                  {sendingAlert ? 'Transmitting...' : 'Send Network Broadcast'}
+                </Button>
+              </div>
             </div>
 
             {/* Dispatch Results Summary */}

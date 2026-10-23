@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback } from 'react';
 import { CheckCircle2, AlertTriangle, AlertCircle, Info, X } from 'lucide-react';
+import { socketService } from '../services/websocket/socketService';
 
 export type ToastType = 'success' | 'warning' | 'error' | 'info';
 
@@ -32,6 +33,50 @@ export const NotificationProvider: React.FC<{ children: React.ReactNode }> = ({ 
       removeToast(id);
     }, 4500);
   }, [removeToast]);
+
+  React.useEffect(() => {
+    const unsubs = [
+      socketService.on('DONATION_CREATED', (data: any) => {
+        showToast(
+          'New Surplus Food Available!',
+          `${data.portions} portions (${data.quantity_kg}kg) posted by ${data.donor_name}.`,
+          'info'
+        );
+      }),
+      socketService.on('DISPATCH_REQUIRED', (data: any) => {
+        showToast(
+          'Dispatch Required 🚀',
+          `Mission for "${data.title}" ready for courier assignment.`,
+          'warning'
+        );
+      }),
+      socketService.on('STOP_ARRIVED', (data: any) => {
+        showToast(
+          'Courier Arrived 📍',
+          `${data.volunteer_name || 'Courier'} arrived at ${data.organization_name}.`,
+          'info'
+        );
+      }),
+      socketService.on('HANDOVER_CONFIRMED', (data: any) => {
+        showToast(
+          'Handover Authenticated ✅',
+          `Physical transfer at ${data.organization_name} confirmed.`,
+          'success'
+        );
+      }),
+      socketService.on('SYSTEM_ALERT', (data: any) => {
+        showToast(
+          data.title || 'System Announcement',
+          data.message || 'Urgent logistics broadcast.',
+          'warning'
+        );
+      }),
+    ];
+
+    return () => {
+      unsubs.forEach((unsub) => unsub());
+    };
+  }, [showToast]);
 
   return (
     <NotificationContext.Provider value={{ showToast }}>

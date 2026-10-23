@@ -13,6 +13,7 @@ from app.api.v1.endpoints import (
     organizations,
     routing,
     volunteer,
+    ws,
 )
 
 api_router = APIRouter()
@@ -51,4 +52,9 @@ api_router.include_router(
 # Google OR-Tools VRP Route Optimization & Auto-Dispatch
 api_router.include_router(
     routing.router, prefix="/routing", tags=["Google OR-Tools VRP Routing"]
+)
+
+# WebSockets Real-Time Event Streaming & Courier GPS Telemetry
+api_router.include_router(
+    ws.router, prefix="/ws", tags=["WebSockets & Live Telemetry"]
 )

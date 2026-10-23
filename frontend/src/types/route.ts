@@ -132,3 +132,14 @@ export interface AutoDispatchResult {
   message: string;
 }
 
+export interface CourierTelemetry {
+  courier_id: string;
+  courier_name?: string;
+  latitude: number;
+  longitude: number;
+  speed_kmh?: number;
+  heading_deg?: number;
+  route_id?: string;
+  pickup_id?: string;
+  timestamp: string;
+}

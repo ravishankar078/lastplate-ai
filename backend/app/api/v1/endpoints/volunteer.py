@@ -372,6 +372,28 @@ async def mark_stop_arrival(
     await db.commit()
     await db.refresh(stop)
 
+    # Real-time WebSocket event broadcast to dispatch channel
+    try:
+        from app.services.websocket_manager import ws_manager
+        await ws_manager.broadcast_to_channel(
+            "dispatch",
+            {
+                "type": "STOP_ARRIVED",
+                "timestamp": now.isoformat(),
+                "payload": {
+                    "stop_id": str(stop.id),
+                    "route_id": str(stop.route_id),
+                    "organization_name": stop.organization.name if stop.organization else stop.address,
+                    "stop_type": stop.stop_type,
+                    "stop_sequence": stop.stop_sequence,
+                    "volunteer_id": str(current_user.id),
+                    "volunteer_name": current_user.full_name,
+                },
+            },
+        )
+    except Exception:
+        pass
+
     resp = build_single_stop_response(stop)
     return ResponseEnvelope[RouteStopResponse](
         success=True,
@@ -525,6 +547,28 @@ async def verify_handover(
 
     await db.commit()
     await db.refresh(pickup)
+
+    # Real-time WebSocket event broadcast to dispatch channel
+    try:
+        from app.services.websocket_manager import ws_manager
+        await ws_manager.broadcast_to_channel(
+            "dispatch",
+            {
+                "type": "HANDOVER_CONFIRMED",
+                "timestamp": now.isoformat(),
+                "payload": {
+                    "stop_id": str(stop.id),
+                    "route_id": str(stop.route_id),
+                    "pickup_id": str(pickup.id),
+                    "organization_name": stop.organization.name if stop.organization else stop.address,
+                    "stop_type": stop.stop_type,
+                    "new_pickup_status": pickup.status,
+                    "is_route_completed": route_completed,
+                },
+            },
+        )
+    except Exception:
+        pass
 
     return ResponseEnvelope[VerifyHandoverResponse](
         success=True,

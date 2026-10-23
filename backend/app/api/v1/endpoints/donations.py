@@ -159,6 +159,29 @@ async def create_donation(
         except Exception as e:
             logger.warning(f"Automated matching engine background execution encountered an issue: {e}")
 
+    # Real-time WebSocket broadcast to subscribed NGOs and Donors
+    try:
+        from app.services.websocket_manager import ws_manager
+        await ws_manager.broadcast_to_channel(
+            "donations",
+            {
+                "type": "DONATION_CREATED",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "payload": {
+                    "donation_id": str(donation.id),
+                    "title": donation.title,
+                    "food_type": donation.food_type,
+                    "quantity_kg": float(donation.quantity_kg),
+                    "portions": donation.portions,
+                    "storage_condition": donation.storage_condition,
+                    "donor_name": donor_org.name,
+                    "status": donation.status,
+                },
+            },
+        )
+    except Exception as ws_err:
+        logger.debug(f"WebSocket broadcast error: {ws_err}")
+
     response_data = DonationResponse.model_validate(donation)
     response_data.donor_organization_name = donor_org.name
 

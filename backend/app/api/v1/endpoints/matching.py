@@ -530,6 +530,29 @@ async def accept_match(
     await db.commit()
     await db.refresh(pickup)
 
+    # Real-time WebSocket event broadcast to dispatch channel
+    try:
+        from app.services.websocket_manager import ws_manager
+        await ws_manager.broadcast_to_channel(
+            "dispatch",
+            {
+                "type": "DISPATCH_REQUIRED",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "payload": {
+                    "pickup_id": str(pickup.id),
+                    "donation_id": str(donation.id),
+                    "title": donation.title,
+                    "quantity_kg": float(donation.quantity_kg),
+                    "portions": donation.portions,
+                    "storage_condition": donation.storage_condition,
+                    "recipient_name": recipient_org.name,
+                    "scheduled_pickup_time": scheduled_pickup.isoformat(),
+                },
+            },
+        )
+    except Exception as ws_err:
+        logger.debug(f"WebSocket broadcast error: {ws_err}")
+
     response_data = AcceptMatchResponse(
         success=True,
         donation_id=donation.id,
