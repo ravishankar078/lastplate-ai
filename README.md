@@ -172,3 +172,4 @@ PYTHONPATH=backend backend/venv/bin/pytest backend/tests -v
 ## 📄 License
 
 LastPlate is open-source software licensed under the [MIT License](LICENSE).
+# lastplate-ai
