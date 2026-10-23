@@ -59,14 +59,18 @@ app.add_middleware(
 )
 
 
-# Request timing middleware
+# Request timing and security headers middleware
 @app.middleware("http")
-async def add_process_time_header(request: Request, call_next):
-    """Measures total request processing time and adds X-Process-Time header."""
+async def add_security_and_timing_headers(request: Request, call_next):
+    """Measures request processing time and adds hardened production security headers."""
     start_time = time.perf_counter()
     response = await call_next(request)
     process_time = (time.perf_counter() - start_time) * 1000  # ms
     response.headers["X-Process-Time"] = f"{process_time:.2f}ms"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
 
 
