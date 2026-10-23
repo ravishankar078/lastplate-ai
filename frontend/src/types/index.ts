@@ -4,6 +4,7 @@ export * from './donation';
 export * from './match';
 export * from './route';
 export * from './audit';
+export * from './admin';
 
 // Public site specific contracts (Phase 1)
 export interface ImpactStats {

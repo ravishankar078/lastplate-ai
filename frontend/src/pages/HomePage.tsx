@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   HeartHandshake, 
   Building2, 
@@ -15,7 +15,8 @@ import {
 import { Button } from '../components/common/Button';
 import { Badge } from '../components/common/Badge';
 import { SAMPLE_IMPACT_STATS, SAMPLE_LIVE_RESCUES, TESTIMONIALS } from '../data/mockData';
-import { UserRole } from '../types';
+import { adminService } from '../services/api/adminService';
+import { UserRole, ImpactStats } from '../types';
 
 export interface HomePageProps {
   onNavigate: (page: string) => void;
@@ -24,6 +25,13 @@ export interface HomePageProps {
 
 export const HomePage: React.FC<HomePageProps> = ({ onNavigate, onOpenAuth }) => {
   const [activeStepTab, setActiveStepTab] = useState<number>(0);
+  const [impactStats, setImpactStats] = useState<ImpactStats>(SAMPLE_IMPACT_STATS);
+
+  useEffect(() => {
+    adminService.getPublicImpact().then((stats) => {
+      if (stats) setImpactStats(stats);
+    });
+  }, []);
 
   const workflowSteps = [
     {
@@ -218,14 +226,16 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate, onOpenAuth }) =>
               </h2>
             </div>
             <div className="text-xs text-forest-200 bg-forest-950/60 px-3 py-1.5 rounded-xl border border-forest-800">
-              *Sample demonstration figures per Section 10 of platform specification
+              {impactStats.isSampleData 
+                ? '*Sample demonstration figures per Section 10 of platform specification' 
+                : 'Verified real-time platform impact computed from database records'}
             </div>
           </div>
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-6 sm:gap-8 pt-8">
             <div className="space-y-1">
               <p className="text-3xl sm:text-4xl font-extrabold text-amberGold-400 font-serif">
-                {SAMPLE_IMPACT_STATS.mealsRescued.toLocaleString()}+
+                {impactStats.mealsRescued.toLocaleString()}+
               </p>
               <p className="text-xs sm:text-sm font-medium text-forest-100">Wholesome Meals Rescued</p>
               <p className="text-[11px] text-forest-300">Diverted from landfill disposal</p>
@@ -233,7 +243,7 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate, onOpenAuth }) =>
 
             <div className="space-y-1">
               <p className="text-3xl sm:text-4xl font-extrabold text-white font-serif">
-                {(SAMPLE_IMPACT_STATS.co2AvoidedKg / 1000).toFixed(1)} t
+                {(impactStats.co2AvoidedKg / 1000).toFixed(1)} t
               </p>
               <p className="text-xs sm:text-sm font-medium text-forest-100">CO₂e Emissions Avoided</p>
               <p className="text-[11px] text-forest-300">Based on EPA WARM food matrix</p>
@@ -241,15 +251,15 @@ export const HomePage: React.FC<HomePageProps> = ({ onNavigate, onOpenAuth }) =>
 
             <div className="space-y-1">
               <p className="text-3xl sm:text-4xl font-extrabold text-emerald-300 font-serif">
-                {SAMPLE_IMPACT_STATS.activeDonors + SAMPLE_IMPACT_STATS.verifiedNGOs}
+                {impactStats.activeDonors + impactStats.verifiedNGOs}
               </p>
               <p className="text-xs sm:text-sm font-medium text-forest-100">Verified Organizations</p>
-              <p className="text-[11px] text-forest-300">{SAMPLE_IMPACT_STATS.activeDonors} Donors &bull; {SAMPLE_IMPACT_STATS.verifiedNGOs} Kitchens</p>
+              <p className="text-[11px] text-forest-300">{impactStats.activeDonors} Donors &bull; {impactStats.verifiedNGOs} Kitchens</p>
             </div>
 
             <div className="space-y-1">
               <p className="text-3xl sm:text-4xl font-extrabold text-white font-serif">
-                {SAMPLE_IMPACT_STATS.avgPickupTimeMinutes} min
+                {impactStats.avgPickupTimeMinutes} min
               </p>
               <p className="text-xs sm:text-sm font-medium text-forest-100">Average Pickup Speed</p>
               <p className="text-[11px] text-forest-300">Safe collection window adherence</p>

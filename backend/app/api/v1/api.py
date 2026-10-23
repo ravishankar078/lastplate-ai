@@ -5,6 +5,7 @@ Combines sub-routers for health, authentication, organizations, donations, match
 
 from fastapi import APIRouter
 from app.api.v1.endpoints import (
+    admin,
     auth,
     donations,
     health,
@@ -57,4 +58,9 @@ api_router.include_router(
 # WebSockets Real-Time Event Streaming & Courier GPS Telemetry
 api_router.include_router(
     ws.router, prefix="/ws", tags=["WebSockets & Live Telemetry"]
+)
+
+# Administrative Oversight, Analytics, and Audit Logs
+api_router.include_router(
+    admin.router, prefix="/admin", tags=["Administrative Oversight & Analytics"]
 )
